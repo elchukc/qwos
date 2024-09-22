@@ -5,4 +5,5 @@ edition = "2021"
 
 [dependencies]
 # TODO migrate this to v. 11.7
-bootloader = "0.9"
+bootloader = "=0.9"
+volatile = "=0.2.6"
