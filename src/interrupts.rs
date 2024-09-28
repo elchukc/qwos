@@ -36,7 +36,8 @@ lazy_static!{
       idt.double_fault.set_handler_fn(double_fault_handler)
         .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
     }
-    idt[InterruptIndex::Timer.as_usize()].set_handler_fn(timer_interrupt_handler);
+    // NOTE the example had this as .as_usize()
+    idt[InterruptIndex::Timer.as_u8()].set_handler_fn(timer_interrupt_handler);
 
     idt
   };
