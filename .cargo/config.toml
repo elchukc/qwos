@@ -1,6 +1,8 @@
 [unstable]
 build-std-features = ["compiler-builtins-mem"]
 build-std = ["core", "compiler_builtins"]
+# enable artifact dependencies
+bindeps = true
 
 [build]
 target = "x86_64-qwos.json"

@@ -2,44 +2,36 @@ use core::fmt;
 use lazy_static::lazy_static;
 use spin::Mutex;
 use volatile::Volatile;
+use font_constants::BACKUP_CHAR;
+use bootloader_api::info::{FrameBufferInfo,  PixelFormat};
+use noto_sans_mono_bitmap::{get_raster, get_raster_width, FontWeight, RasterHeight, RasterizedChar};
 
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Color {
-  Black,
-  Blue,
-  Green,
-  Cyan,
-  Red,
-  Magenta,
-  Brown,
-  LightGray,
-  DarkGray,
-  LightBlue,
-  LightGreen,
-  LightCyan,
-  LightRed,
-  Pink,
-  Yellow,
-  White,
+/// Additional vertical space between lines
+const LINE_SPACING: usize = 2;
+/// Additional horizontal space between characters.
+const LETTER_SPACING: usize = 0;
+/// Padding from the border. Prevent that font is too close to border.
+const BORDER_PADDING: usize = 1;
+
+/// Constants for the usage of the [`noto_sans_mono_bitmap`] crate.
+mod font_constants {
+  use super::*;
+  /// Height of each char raster. The font size is ~0.84% of this. Thus, this is the line height that
+  /// enables multiple characters to be side-by-side and appear optically in one line in a natural way.
+  pub const CHAR_RASTER_HEIGHT: RasterHeight = RasterHeight::Size16;
+  /// The width of each single symbol of the mono space font.
+  pub const CHAR_RASTER_WIDTH: usize = get_raster_width(FontWeight::Regular, CHAR_RASTER_HEIGHT);
+  /// Backup character if a desired symbol is not available by the font.
+  /// The '�' character requires the feature "unicode-specials".
+  pub const BACKUP_CHAR: char = '�';
+  pub const FONT_WEIGHT: FontWeight = FontWeight::Regular;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(transparent)]
-struct ColorCode(u8);
-
-impl ColorCode {
-  fn new(foreground: Color, background: Color) -> ColorCode {
-    ColorCode((background as u8) << 4 | (foreground as u8))
+fn get_char_raster(c: char)  -> RasterizedChar {
+  fn get(c: char) -> Option<RasterizedChar> {
+    get_raster(c, font_constants::FONT_WEIGHT, font_constants::CHAR_RASTER_HEIGHT)
   }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(C)]
-struct ScreenChar {
-  ascii_character: u8,
-  color_code: ColorCode,
+  get(c).unwrap_or_else(|| get(BACKUP_CHAR).expect("Should get raster of backup char."))
 }
 
 #[macro_export]
@@ -63,88 +55,114 @@ pub fn _print(args: fmt::Arguments) {
   });
 }
 
-const BUFFER_HEIGHT: usize = 25;
-const BUFFER_WIDTH: usize = 80;
-
-#[repr(transparent)]
-struct Buffer {
-  chars: [[Volatile<ScreenChar>; BUFFER_WIDTH]; BUFFER_HEIGHT],
+struct FrameBufferWriter {
+  framebuffer: &'static mut [u8],
+  info: FrameBufferInfo,
+  x_pos: usize,
+  y_pos: usize,
 }
 
-pub struct Writer {
-  column_position: usize,
-  color_code: ColorCode,
-  buffer: &'static mut Buffer,
-}
+impl FrameBufferWriter {
+  /// Creates a new logger that uses the given framebuffer
+  pub fn new(framebuffer: &'static mut [u8], info: FrameBufferInfo) -> Self {
+    let mut logger = Self {
+      framebuffer,
+      info,
+      x_pos: 0,
+      y_pos: 0,
+    };
+    logger.clear();
+    logger
+  }
 
-impl Writer {
-  pub fn write_byte(&mut self, byte: u8) {
-    match byte {
-      b'\n' => self.new_line(),
-      byte => {
-        if self.column_position >= BUFFER_WIDTH {
-          self.new_line();
+  /// Writes a single char to the framebuffer. Takes care of special control characters, such as
+  /// newlines and carriage returns.
+  fn write_char(&mut self, c: char) {
+    match c {
+      '\n' => self.new_line(),
+      '\r' => self.carriage_return(),
+      c => {
+        let new_xpos = self.x_pos + font_constants::CHAR_RASTER_WIDTH;
+        if new_xpos >= self.width() {
+          self.new_line()
         }
-
-        let row = BUFFER_HEIGHT - 1;
-        let col = self.column_position;
-
-        let color_code = self.color_code;
-        self.buffer.chars[row][col].write(ScreenChar {
-          ascii_character: byte,
-          color_code,
-        });
-        self.column_position += 1;
+        let new_ypos = self.y_pos + font_constants::CHAR_RASTER_HEIGHT.val() + BORDER_PADDING;
+        if new_ypos >= self.height() {
+          self.clear();
+        }
+        self.write_rendered_char(get_char_raster(c));
       }
     }
   }
 
-  pub fn write_string(&mut self, s: &str) {
-    for byte in s.bytes() {
-      match byte {
-        // printable ASCII byte or newline
-        0x20..=0x7e | b'\n' => self.write_byte(byte),
-        // not part of printable ASCII range
-        _ => self.write_byte(0xfe),
+  /// Prints a rendered char into the framebuffer.
+  /// Updates `self.x_pos`.
+  fn write_rendered_char(&mut self, rendered_char: RasterizedChar) {
+    for (y, row) in rendered_char.raster().iter().enumerate() {
+      for (x, byte) in row.iter().enumerate() {
+        self.write_pixel(self.x_pos + x, self.y_pos + y, *byte);
       }
     }
+    self.x_pos += rendered_char.width() + LETTER_SPACING;
+  }
+
+  // See bootloader's framebuffer example if you want this
+  // fn write_pixel(&mut self, x: usize, y: usize, intensity: u8) {...}
+
+  fn width(&self) -> usize {
+    self.info.width
+  }
+
+  fn height(&self) -> usize {
+    self.info.height
   }
 
   fn new_line(&mut self) {
-    for row in 1..BUFFER_HEIGHT {
-      for col in 0..BUFFER_WIDTH {
-        let character = self.buffer.chars[row][col].read();
-        self.buffer.chars[row - 1][col].write(character);
-      }
+    self.y_pos += font_constants::CHAR_RASTER_HEIGHT.val() + LINE_SPACING;
+    self.carriage_return(&mut self) {
+      self.x_pos = BORDER_PADDING;
     }
-    self.clear_row(BUFFER_HEIGHT - 1);
-    self.column_position = 0;
   }
 
-  fn clear_row(&mut self, row: usize) {
-    let blank = ScreenChar {
-      ascii_character: b' ',
-      color_code: self.color_code,
-    };
-    for col in 0..BUFFER_WIDTH {
-      self.buffer.chars[row][col].write(blank);
-    }
+  pub fn clear(&mut self) {
+    self.x_pos = BORDER_PADDING;
+    self.y_pos = BORDER_PADDING;
+    self.framebuffer.fill(0);
   }
 }
 
-impl fmt::Write for Writer {
+unsafe impl Send for FrameBufferWriter {}
+unsafe impl Sync for FrameBufferWriter {}
+
+impl fmt::Write for FrameBufferInfoWriter {
   fn write_str(&mut self, s: &str) -> fmt::Result {
-    self.write_string(s);
+    for c in s.chars() {
+      self.write_char(c);
+    }
     Ok(())
   }
 }
+// pub fn new(framebuffer: &'static mut [u8], info: FrameBufferInfo) -> Self {
+//   let mut logger = Self {
+//     framebuffer,
+//     info,
+//     x_pos: 0,
+//     y_pos: 0,
+//   };
+//   logger.clear();
+//   logger
+// }
 
 lazy_static! {
-  pub static ref WRITER: Mutex<Writer> = Mutex::new(Writer {
+  pub static ref WRITER: Mutex<FrameBufferWriter> = Mutex::new(FrameBufferWriter {
     column_position: 0,
     color_code: ColorCode::new(Color::Yellow, Color::Black),
     buffer: unsafe { &mut *(0xb8000 as *mut Buffer) },
   });
+  pub static ref FRAMEBUFFER: Mutex<FrameBufferWriter> = Mutex::new(FrameBufferWriter::new(
+    unsafe {&mut *(0xb8000 as mut* FrameBuffer)},
+    
+  ));
 }
 
 #[test_case]
