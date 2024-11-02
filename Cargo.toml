@@ -15,7 +15,7 @@ pc-keyboard = "0.8.0"
 
 [build-dependencies]
 bootloader = "0.11"
-test-kernel = {path = ".", artifact = "bin", target = "x86_64-unknown-linux-gnu"}
+test-kernel = {path = "kernel", artifact = "bin", target = "x86_64-unknown-none"}
 
 [workspace]
 members = ["kernel"]
