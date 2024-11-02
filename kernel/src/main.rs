@@ -5,10 +5,12 @@
 #![reexport_test_harness_main = "test_main"]
 
 use core::panic::PanicInfo;
+use bootloader_api::entry_point;
 use qwos::println;
 
-#[no_mangle]
-pub extern "C" fn _start() -> ! {
+entry_point!(kernel_main);
+
+fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
   println!("Hello World{}", "!");
 
   // read env variables that were set in build script

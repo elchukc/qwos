@@ -1,5 +1,5 @@
 [package]
-name = "qwos"
+name = "kernel"
 version = "0.1.0"
 edition = "2021"
 
@@ -17,6 +17,7 @@ pc-keyboard = "0.8.0"
 version = "1.0"
 features = ["spin_no_std"]
 
+## TODO bootimage had some automatic handling for custom testing. Must add own.
 [[test]]
 name = "should_panic"
 harness = false
